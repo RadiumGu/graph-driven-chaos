@@ -28,3 +28,6 @@ Thumbs.db
 # Env
 .env
 .env.*
+
+# External submodules
+Chaosmesh-MCP/
