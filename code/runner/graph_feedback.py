@@ -1,18 +1,19 @@
 """
-graph_feedback.py - 实验结果写回 Neptune 图谱（通过 neptune-proxy.py）
-只写 chaos_* 前缀字段，不覆盖 ETL 字段。
+graph_feedback.py - 实验结果写回 Neptune 图谱
+
+通过统一 neptune_client.py（SigV4 直连）写回 Gremlin 查询。
+启动前执行 connectivity check，不可用时记录警告而非静默失败。
 """
 from __future__ import annotations
 import logging
-import requests
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from .result import ExperimentResult
 
-logger = logging.getLogger(__name__)
+from .neptune_client import query_gremlin, check_connectivity
 
-NEPTUNE_PROXY = "http://localhost:9876"   # neptune-proxy.py 本地代理
+logger = logging.getLogger(__name__)
 
 # 需要写回的故障类型（对应 Calls 边）
 CALLS_EDGE_FAULT_TYPES = {
@@ -31,6 +32,10 @@ class GraphFeedback:
         if result.status not in ("PASSED", "FAILED", "ABORTED"):
             logger.info(f"跳过 Neptune 写回（status={result.status}）")
             return
+
+        # 写回前检查 Neptune 连通性，不可用则提前失败（有明确日志）
+        if not check_connectivity():
+            raise RuntimeError("Neptune 不可达，图谱反馈跳过（检查 VPC 网络 / IAM 权限）")
 
         degradation = result.degradation_rate()
         dep_type    = self._classify(degradation)
@@ -121,9 +126,7 @@ g.V().hasLabel('Microservice').has('name', '{svc}')
         else:                        return "none"
 
     def _run_gremlin(self, query: str):
-        resp = requests.post(
-            f"{NEPTUNE_PROXY}/gremlin",
-            json={"gremlin": query},
-            timeout=10,
-        )
-        resp.raise_for_status()
+        """
+        执行 Gremlin 查询，通过 neptune_client.py SigV4 直连 Neptune。
+        """
+        query_gremlin(query)

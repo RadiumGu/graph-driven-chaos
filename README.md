@@ -118,6 +118,30 @@ curl -s "http://11.0.2.30:8123/?query=SHOW+TABLES+FROM+flow_log"
 | Chaos Mesh | >= 2.6 | 部署在 EKS 集群，提供 PodChaos / NetworkChaos / StressChaos 等 CRD |
 | kubeconfig | 已配置 PetSite 集群访问权限 |
 
+#### Chaos Mesh 快速部署
+
+```bash
+# 方式一：使用项目自带安装脚本（推荐）
+# 脚本位于 Chaosmesh-MCP/setup-uvx.sh，自动安装 Chaos Mesh 并配置 MCP Server
+bash /home/ubuntu/tech/chaos/Chaosmesh-MCP/setup-uvx.sh
+
+# 方式二：Helm 手动安装
+helm repo add chaos-mesh https://charts.chaos-mesh.org
+helm repo update
+kubectl create namespace chaos-mesh
+helm install chaos-mesh chaos-mesh/chaos-mesh \
+  --namespace=chaos-mesh \
+  --set chaosDaemon.runtime=containerd \
+  --set chaosDaemon.socketPath=/run/containerd/containerd.sock \
+  --version 2.6.3
+
+# 验证安装
+kubectl get pods -n chaos-mesh
+```
+
+> **注意：** `Chaosmesh-MCP/` 是一个独立的 MCP Server，**供 Amazon Q / AI Agent 交互式探索使用**，
+> 并非本平台主执行路径（主路径通过 `kubectl apply CRD` 注入，见 `chaos_mcp.py`）。详见下方说明。
+
 ### 环境变量（可选，有默认值）
 
 ```bash

@@ -24,52 +24,22 @@ import argparse
 import json
 import logging
 import os
-import ssl
 import sys
-import urllib.request
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Optional
 
 import boto3
-from botocore.auth import SigV4Auth
-from botocore.awsrequest import AWSRequest
 
 # 确保 runner 包可导入（fmea.py 在 code/fmea/ 下，runner 在 code/runner/ 下）
 _CODE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _CODE_DIR not in sys.path:
     sys.path.insert(0, _CODE_DIR)
 
+from runner.neptune_client import query_opencypher as _neptune_query
 from runner.query import ExperimentQueryClient
 
 logger = logging.getLogger(__name__)
-
-# ─── Neptune 客户端（与 gen_template.py 保持一致）─────────────────────────────
-
-NEPTUNE_HOST = "petsite-neptune.cluster-czbjnsviioad.ap-northeast-1.neptune.amazonaws.com"
-NEPTUNE_URL  = f"https://{NEPTUNE_HOST}:8182/openCypher"
-REGION       = "ap-northeast-1"
-
-_ssl_ctx = ssl.create_default_context()
-_ssl_ctx.check_hostname = False
-_ssl_ctx.verify_mode    = ssl.CERT_NONE
-
-
-def _neptune_query(cypher: str) -> list[dict]:
-    """执行 Neptune openCypher 查询，使用 SigV4 认证（与 gen_template.py 一致）"""
-    session = boto3.Session(region_name=REGION)
-    creds   = session.get_credentials().get_frozen_credentials()
-    body    = json.dumps({"query": cypher})
-    req     = AWSRequest(
-        method="POST", url=NEPTUNE_URL, data=body,
-        headers={"Content-Type": "application/json", "Host": NEPTUNE_HOST},
-    )
-    SigV4Auth(creds, "neptune-db", REGION).add_auth(req)
-    http_req = urllib.request.Request(
-        NEPTUNE_URL, data=body.encode(), headers=dict(req.headers), method="POST"
-    )
-    with urllib.request.urlopen(http_req, context=_ssl_ctx, timeout=10) as resp:
-        return json.loads(resp.read()).get("results", [])
 
 
 # ─── 数据类 ──────────────────────────────────────────────────────────────────

@@ -15,45 +15,17 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import ssl
 import sys
-import urllib.request
 from datetime import datetime
 from textwrap import dedent
 from typing import Optional
-
-import boto3
-from botocore.auth import SigV4Auth
-from botocore.awsrequest import AWSRequest
 
 # ─── Neptune 客户端 ──────────────────────────────────────────────────────────
 
 import sys as _sys
 import os as _os
 _sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
-from runner.config import REGION, NEPTUNE_HOST, NEPTUNE_ENDPOINT
-
-NEPTUNE_URL = f"{NEPTUNE_ENDPOINT}/openCypher"
-
-_ssl_ctx = ssl.create_default_context()
-_ssl_ctx.check_hostname = False
-_ssl_ctx.verify_mode = ssl.CERT_NONE
-
-
-def _neptune_query(cypher: str) -> list[dict]:
-    session = boto3.Session(region_name=REGION)
-    creds   = session.get_credentials().get_frozen_credentials()
-    body    = json.dumps({"query": cypher})
-    req     = AWSRequest(
-        method="POST", url=NEPTUNE_URL, data=body,
-        headers={"Content-Type": "application/json", "Host": NEPTUNE_HOST},
-    )
-    SigV4Auth(creds, "neptune-db", REGION).add_auth(req)
-    http_req = urllib.request.Request(
-        NEPTUNE_URL, data=body.encode(), headers=dict(req.headers), method="POST"
-    )
-    with urllib.request.urlopen(http_req, context=_ssl_ctx, timeout=10) as resp:
-        return json.loads(resp.read()).get("results", [])
+from runner.neptune_client import query_opencypher as _neptune_query
 
 
 # ─── 图谱服务上下文 ───────────────────────────────────────────────────────────

@@ -24,33 +24,19 @@ import glob as _glob
 import json
 import logging
 import os
-import ssl
 import subprocess
 import time
-import urllib.request
 from datetime import datetime, timezone
 from typing import Optional, TYPE_CHECKING
 
 import boto3
 import yaml as _yaml
-from botocore.auth import SigV4Auth
-from botocore.awsrequest import AWSRequest
 
-from .config import REGION, ACCOUNT_ID, NEPTUNE_HOST, NEPTUNE_ENDPOINT
+from .config import REGION, ACCOUNT_ID, SERVICE_TO_K8S_LABEL
+from .neptune_client import query_opencypher, query_gremlin
 
 if TYPE_CHECKING:
     from .experiment import Experiment
-
-# ─── Neptune 逻辑名 → K8s app label 映射 ──────────────────────────────────────
-# Chaos Mesh YAML 用 Neptune 逻辑名，但 K8s Deployment 的 app label 不同
-# 如果逻辑名和 K8s label 一致则无需添加
-SERVICE_TO_K8S_LABEL = {
-    "petsearch":        "search-service",
-    "payforadoption":   "pay-for-adoption",
-    "petlistadoptions": "list-adoptions",
-    # petsite → petsite (一致，无需映射)
-    # pethistory → pethistory (一致，无需映射)
-}
 
 logger = logging.getLogger(__name__)
 
@@ -64,10 +50,6 @@ CACHE_FILE     = FIS_CACHE_FILE
 
 CACHE_TTL = 3600  # 1 小时
 
-_ssl_ctx = ssl.create_default_context()
-_ssl_ctx.check_hostname = False
-_ssl_ctx.verify_mode    = ssl.CERT_NONE
-
 
 class TargetResolver:
     """
@@ -77,67 +59,40 @@ class TargetResolver:
     - 批量:       resolve_all_experiments(experiments_dir) → {"fis": ..., "chaosmesh": ...}
     """
 
-    def __init__(self):
+    def __init__(self, tags: dict = None):
+        self._tags: dict             = tags or {}
         self._fis_cache: dict        = {}
         self._fis_cache_loaded: bool = False
         self._cm_cache: dict         = {}
         self._cm_cache_loaded: bool  = False
 
-    # ─── Neptune OpenCypher 查询（SigV4）──────────────────────────────────────
+    # ─── Tag 过滤 ──────────────────────────────────────────────────────────────
+
+    def _match_tags(self, resource_arn: str) -> bool:
+        """检查资源 tag 是否匹配所有 filter tag（resourcegroupstaggingapi）"""
+        if not self._tags:
+            return True
+        try:
+            client = boto3.client("resourcegroupstaggingapi", region_name=REGION)
+            resp = client.get_resources(ResourceARNList=[resource_arn])
+            mappings = resp.get("ResourceTagMappingList", [])
+            if not mappings:
+                return False
+            tags = {t["Key"]: t["Value"] for t in mappings[0].get("Tags", [])}
+            return all(tags.get(k) == v for k, v in self._tags.items())
+        except Exception as e:
+            logger.warning(f"Tag 检查失败（放行）: {resource_arn}: {e}")
+            return True
+
+    # ─── Neptune 查询（委托给 neptune_client.py）─────────────────────────────
 
     def _neptune_query(self, cypher: str) -> list[dict]:
-        url     = f"{NEPTUNE_ENDPOINT}/openCypher"
-        session = boto3.Session(region_name=REGION)
-        creds   = session.get_credentials().get_frozen_credentials()
-        body    = json.dumps({"query": cypher})
-        req     = AWSRequest(
-            method="POST", url=url, data=body,
-            headers={"Content-Type": "application/json", "Host": NEPTUNE_HOST},
-        )
-        SigV4Auth(creds, "neptune-db", REGION).add_auth(req)
-        http_req = urllib.request.Request(
-            url, data=body.encode(), headers=dict(req.headers), method="POST",
-        )
-        with urllib.request.urlopen(http_req, context=_ssl_ctx, timeout=10) as resp:
-            return json.loads(resp.read()).get("results", [])
+        """OpenCypher 查询，委托给统一 neptune_client。"""
+        return query_opencypher(cypher)
 
     def _neptune_gremlin_query(self, gremlin: str) -> list:
-        """
-        Neptune Gremlin API 查询（POST /gremlin + SigV4）。
-        解包 GraphSON 3.0 格式，返回值列表（字符串 / 基本类型）。
-        """
-        url     = f"{NEPTUNE_ENDPOINT}/gremlin"
-        session = boto3.Session(region_name=REGION)
-        creds   = session.get_credentials().get_frozen_credentials()
-        body    = json.dumps({"gremlin": gremlin})
-        req     = AWSRequest(
-            method="POST", url=url, data=body,
-            headers={"Content-Type": "application/json", "Host": NEPTUNE_HOST},
-        )
-        SigV4Auth(creds, "neptune-db", REGION).add_auth(req)
-        http_req = urllib.request.Request(
-            url, data=body.encode(), headers=dict(req.headers), method="POST",
-        )
-        with urllib.request.urlopen(http_req, context=_ssl_ctx, timeout=10) as resp:
-            raw = json.loads(resp.read())
-
-        # GraphSON 3.0: result.data.@value 是列表
-        data = raw.get("result", {}).get("data", {})
-        if isinstance(data, dict):
-            items = data.get("@value", [])
-        elif isinstance(data, list):
-            items = data
-        else:
-            return []
-
-        # 每个元素可能是 {"@type": ..., "@value": <actual>} 或直接是值
-        result = []
-        for item in items:
-            if isinstance(item, dict) and "@value" in item:
-                result.append(item["@value"])
-            else:
-                result.append(item)
-        return result
+        """Gremlin 查询，委托给统一 neptune_client。"""
+        return query_gremlin(gremlin)
 
     # ─── Neptune 解析层 ────────────────────────────────────────────────────────
 
@@ -217,6 +172,8 @@ class TargetResolver:
         for page in paginator.paginate():
             for fn in page["Functions"]:
                 if service_name.lower() in fn["FunctionName"].lower():
+                    if self._tags and not self._match_tags(fn["FunctionArn"]):
+                        continue
                     return fn["FunctionArn"]
         return None
 
@@ -235,6 +192,8 @@ class TargetResolver:
         # 先按服务名片段精确匹配（候选集中）
         for c in candidates:
             if service_name.lower() in c["DBClusterIdentifier"].lower():
+                if self._tags and not self._match_tags(c["DBClusterArn"]):
+                    continue
                 return c["DBClusterArn"]
 
         # 优先返回 petsite / serviceseks2 相关集群
@@ -242,11 +201,15 @@ class TargetResolver:
         for c in candidates:
             cid = c["DBClusterIdentifier"].lower()
             if any(x in cid for x in PREFER) and c.get("Status") == "available":
+                if self._tags and not self._match_tags(c["DBClusterArn"]):
+                    continue
                 return c["DBClusterArn"]
 
         # 兜底：第一个可用的非排除集群
         for c in candidates:
             if c.get("Status") == "available":
+                if self._tags and not self._match_tags(c["DBClusterArn"]):
+                    continue
                 return c["DBClusterArn"]
         return None
 
@@ -256,8 +219,13 @@ class TargetResolver:
         groups = resp.get("nodegroups", [])
         if not groups:
             return None
-        detail = eks.describe_nodegroup(clusterName=cluster_name, nodegroupName=groups[0])
-        return detail["nodegroup"]["nodegroupArn"]
+        for ng in groups:
+            detail = eks.describe_nodegroup(clusterName=cluster_name, nodegroupName=ng)
+            arn = detail["nodegroup"]["nodegroupArn"]
+            if self._tags and not self._match_tags(arn):
+                continue
+            return arn
+        return None
 
     def _find_subnet_arn(self, az: str) -> Optional[str]:
         ec2 = boto3.client("ec2", region_name=REGION)
@@ -268,17 +236,21 @@ class TargetResolver:
                 {"Name": "tag-key",          "Values": [tag_key]},
             ])
             subnets = resp.get("Subnets", [])
-            if subnets:
-                sid = subnets[0]["SubnetId"]
-                return f"arn:aws:ec2:{REGION}:{ACCOUNT_ID}:subnet/{sid}"
+            for s in subnets:
+                arn = f"arn:aws:ec2:{REGION}:{ACCOUNT_ID}:subnet/{s['SubnetId']}"
+                if self._tags and not self._match_tags(arn):
+                    continue
+                return arn
         # 兜底：AZ 内第一个子网
         resp = ec2.describe_subnets(Filters=[
             {"Name": "availabilityZone", "Values": [az]},
         ])
         subnets = resp.get("Subnets", [])
-        if subnets:
-            sid = subnets[0]["SubnetId"]
-            return f"arn:aws:ec2:{REGION}:{ACCOUNT_ID}:subnet/{sid}"
+        for s in subnets:
+            arn = f"arn:aws:ec2:{REGION}:{ACCOUNT_ID}:subnet/{s['SubnetId']}"
+            if self._tags and not self._match_tags(arn):
+                continue
+            return arn
         return None
 
     def _find_ebs_volume_arn(self, az: str) -> Optional[str]:
@@ -297,9 +269,11 @@ class TargetResolver:
                 {"Name": "status",            "Values": ["in-use"]},
             ])
             vols = resp.get("Volumes", [])
-        if vols:
-            vid = vols[0]["VolumeId"]
-            return f"arn:aws:ec2:{REGION}:{ACCOUNT_ID}:volume/{vid}"
+        for v in vols:
+            arn = f"arn:aws:ec2:{REGION}:{ACCOUNT_ID}:volume/{v['VolumeId']}"
+            if self._tags and not self._match_tags(arn):
+                continue
+            return arn
         return None
 
     def _find_instance_arn(self, service_name: str) -> Optional[str]:
@@ -310,8 +284,10 @@ class TargetResolver:
         ])
         for res in resp.get("Reservations", []):
             for inst in res.get("Instances", []):
-                iid = inst["InstanceId"]
-                return f"arn:aws:ec2:{REGION}:{ACCOUNT_ID}:instance/{iid}"
+                arn = f"arn:aws:ec2:{REGION}:{ACCOUNT_ID}:instance/{inst['InstanceId']}"
+                if self._tags and not self._match_tags(arn):
+                    continue
+                return arn
         return None
 
     # ─── FIS 缓存层 ───────────────────────────────────────────────────────────
@@ -642,3 +618,62 @@ class TargetResolver:
         self._save_cm_cache()
 
         return {"fis": fis_results, "chaosmesh": cm_results}
+
+    # ─── 基础设施快照（供 HypothesisAgent 使用）────────────────────────────────
+
+    def get_infra_snapshot(self, services: list[str], namespace: str = "default") -> dict:
+        """
+        为 HypothesisAgent 提供实时基础设施快照。
+
+        对每个逻辑服务名，解析当前 K8s Pod 状态 + FIS 可用资源，
+        返回轻量级摘要，供 LLM 生成更精准的假设。
+
+        返回格式：
+        {
+            "petsite": {
+                "k8s": {"replicas": 2, "running_pods": 2, "nodes": ["ip-10-..."]},
+                "aws_resources": {"lambda:function": "arn:aws:...", ...},
+            },
+            ...
+        }
+        """
+        snapshot = {}
+        self._load_fis_cache()
+
+        for service in services:
+            entry: dict = {"k8s": None, "aws_resources": {}}
+
+            # K8s Pod 状态
+            try:
+                k8s_label = SERVICE_TO_K8S_LABEL.get(service, service)
+                pods = self._kubectl_get_pods(k8s_label, namespace)
+                replicas = self._kubectl_get_replicas(k8s_label, namespace)
+                running = [p for p in pods if p.get("status") == "Running"]
+                nodes = list({p.get("node", "") for p in running if p.get("node")})
+                entry["k8s"] = {
+                    "app_label": k8s_label,
+                    "replicas": replicas,
+                    "running_pods": len(running),
+                    "total_pods": len(pods),
+                    "nodes": nodes,
+                }
+            except Exception as e:
+                logger.debug(f"K8s 快照跳过 {service}: {e}")
+
+            # FIS 可用资源（从缓存中查找关联的 ARN）
+            for cache_key, cached in self._fis_cache.items():
+                # cache_key 格式: "resource_type:service_name"
+                parts = cache_key.split(":", 1)
+                if len(parts) == 2:
+                    res_type_prefix = parts[0]
+                    svc_part = cache_key.split(":")[-1] if ":" in cache_key else ""
+                    # 宽松匹配：服务名出现在 cache_key 中
+                    if service.lower() in cache_key.lower():
+                        arn = cached.get("arn", "")
+                        if arn:
+                            entry["aws_resources"][cache_key] = arn
+
+            snapshot[service] = entry
+
+        logger.info(f"基础设施快照: {len(snapshot)} 个服务")
+        return snapshot

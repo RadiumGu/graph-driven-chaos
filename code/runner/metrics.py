@@ -13,18 +13,16 @@ import requests
 from dataclasses import dataclass
 
 from .experiment import MetricsSnapshot
+from .config import DEEPFLOW_CH_HOST, DEEPFLOW_CH_PORT
 
 logger = logging.getLogger(__name__)
-
-CH_HOST = "11.0.2.30"
-CH_PORT = 8123
 
 
 def _ch_query(sql: str) -> dict:
     """执行 ClickHouse 查询，返回 FORMAT JSON 结果"""
     try:
         r = requests.post(
-            f"http://{CH_HOST}:{CH_PORT}/",
+            f"http://{DEEPFLOW_CH_HOST}:{DEEPFLOW_CH_PORT}/",
             data=(sql + " FORMAT JSON").encode(),
             headers={"Content-Type": "text/plain"},
             timeout=10,

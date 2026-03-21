@@ -20,6 +20,8 @@ from typing import Optional
 
 import yaml
 
+from .config import SERVICE_TO_K8S_LABEL
+
 logger = logging.getLogger(__name__)
 
 NAMESPACE = "default"
@@ -49,13 +51,8 @@ def _apply_yaml(manifest: dict) -> dict:
 
 
 def _selector_spec(service: str, namespace: str = "default") -> dict:
-    # 逻辑名 → K8s app label（与 target_resolver.SERVICE_TO_K8S_LABEL 同步）
-    _LABEL_MAP = {
-        "petsearch": "search-service",
-        "payforadoption": "pay-for-adoption",
-        "petlistadoptions": "list-adoptions",
-    }
-    k8s_label = _LABEL_MAP.get(service, service)
+    # 逻辑名 → K8s app label（单一数据源：config.SERVICE_TO_K8S_LABEL）
+    k8s_label = SERVICE_TO_K8S_LABEL.get(service, service)
     return {
         "namespaces": [namespace],
         "labelSelectors": {"app": k8s_label},
