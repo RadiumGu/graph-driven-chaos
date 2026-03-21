@@ -58,8 +58,16 @@ def _gremlin_query(gremlin: str) -> list:
 # ─── Bedrock LLM 调用 ────────────────────────────────────────────────────────
 
 def _invoke_llm(prompt: str, max_tokens: int = 8192) -> str:
-    """调用 Bedrock Claude 模型，返回文本响应。"""
-    client = boto3.client("bedrock-runtime", region_name=BEDROCK_REGION)
+    """调用 Bedrock Claude 模型，返回文本响应。
+    使用 boto3 内置 adaptive retry 模式（exponential backoff），
+    自动处理 ThrottlingException / ServiceUnavailableException。
+    """
+    from botocore.config import Config as _BotocoreConfig
+    client = boto3.client(
+        "bedrock-runtime",
+        region_name=BEDROCK_REGION,
+        config=_BotocoreConfig(retries={"mode": "adaptive", "max_attempts": 5}),
+    )
     resp = client.invoke_model(
         modelId=BEDROCK_MODEL,
         body=json.dumps({

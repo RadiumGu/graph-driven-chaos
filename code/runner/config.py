@@ -38,6 +38,10 @@ BEDROCK_MODEL  = os.environ.get(
 # ─── DynamoDB ─────────────────────────────────────────────────────────────────
 
 DYNAMODB_TABLE = os.environ.get("DYNAMODB_TABLE", "chaos-experiments")
+# 实验记录 TTL（秒）。默认 365 天，确保闭环学习跨年度数据不丢失。
+# 可通过 CHAOS_RECORD_TTL_DAYS 环境变量覆盖（单位：天）。
+CHAOS_RECORD_TTL_DAYS = int(os.environ.get("CHAOS_RECORD_TTL_DAYS", "365"))
+CHAOS_RECORD_TTL_SECONDS = CHAOS_RECORD_TTL_DAYS * 86400
 
 # ─── DeepFlow ClickHouse ──────────────────────────────────────────────────────
 # DeepFlow 部署的 ClickHouse HTTP 端口（默认 8123）

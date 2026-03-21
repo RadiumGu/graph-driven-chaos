@@ -379,6 +379,19 @@ YAML 使用 Neptune 逻辑名，Chaos Mesh 注入时自动映射为 K8s `app=` l
 | `pethistory` | `pethistory` | 领养历史（一致） |
 | `petstatusupdater` | N/A（Lambda 函数） | 走 FIS，不走 ChaosMesh |
 
+## Chaosmesh-MCP 定位说明
+
+`Chaosmesh-MCP/` 是一个独立的 [FastMCP](https://github.com/jlowin/fastmcp) Server，
+**供 Amazon Q / AI Agent 交互式探索 Chaos Mesh 资源时使用**，不是本平台的主执行路径。
+
+| 组件 | 用途 | 执行路径 |
+|------|------|---------|
+| `chaos_mcp.py` (`ChaosMCPClient`) | **主执行路径** — `kubectl apply CRD` 直接注入 | `runner.py` → `ChaosMCPClient` |
+| `Chaosmesh-MCP/server.py` | AI Agent 探索接口（MCP 协议） | Amazon Q / AI Agent → MCP Server |
+
+> **结论：** 生产实验执行完全不经过 MCP Server。Chaosmesh-MCP 是给 AI 工具（如 Amazon Q）
+> 做交互式查询/操作用的辅助工具，可独立部署，对主实验引擎无依赖。
+
 ## 实验模板说明
 
 实验 YAML 只写逻辑名，运行时由 TargetResolver 自动解析真实 ARN：

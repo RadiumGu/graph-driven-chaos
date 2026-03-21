@@ -17,7 +17,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-from .config import REGION, BEDROCK_REGION, BEDROCK_MODEL, DYNAMODB_TABLE
+from .config import REGION, BEDROCK_REGION, BEDROCK_MODEL, DYNAMODB_TABLE, CHAOS_RECORD_TTL_SECONDS
 
 TABLE_NAME = DYNAMODB_TABLE
 REPORT_DIR = "/home/ubuntu/tech/chaos/validation-results"
@@ -48,7 +48,12 @@ class Reporter:
             return ""
 
         try:
-            bedrock = boto3.client("bedrock-runtime", region_name=BEDROCK_REGION)
+            from botocore.config import Config as _BotocoreConfig
+            bedrock = boto3.client(
+                "bedrock-runtime",
+                region_name=BEDROCK_REGION,
+                config=_BotocoreConfig(retries={"mode": "adaptive", "max_attempts": 5}),
+            )
         except Exception as e:
             logger.warning(f"Bedrock 客户端初始化失败，跳过 LLM 分析: {e}")
             return ""
@@ -276,7 +281,7 @@ class Reporter:
             "rca_enabled":              {"BOOL": exp.rca.enabled},
             "report_path":              {"S": result.report_path or ""},
             "yaml_source":              {"S": exp.yaml_source},
-            "ttl":                      {"N": str(int(time.time()) + 90 * 86400)},
+            "ttl":                      {"N": str(int(time.time()) + CHAOS_RECORD_TTL_SECONDS)},
         }
 
         if ssb:
