@@ -1,3 +1,5 @@
+[English](./README_EN.md) | 中文文档
+
 # chaos-automation
 
 PetSite 微服务混沌工程自动化平台 — AI 驱动的假设生成 → 5 Phase 实验引擎 → 闭环学习，支持 AWS FIS + Chaos Mesh 双后端。
