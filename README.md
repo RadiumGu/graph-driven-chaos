@@ -2,6 +2,45 @@
 
 PetSite 微服务混沌工程自动化平台 — AI 驱动的假设生成 → 5 Phase 实验引擎 → 闭环学习，支持 AWS FIS + Chaos Mesh 双后端。
 
+---
+
+## 生态全景 — 三个项目，一个平台
+
+本仓库是基于 PetSite (AWS EKS) 构建的可观测性 + 弹性验证平台中的 **AI 驱动混沌工程平台**。三个独立仓库协同工作：
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                     PetSite on AWS EKS                          │
+└───────────────────────────┬─────────────────────────────────────┘
+                            │
+         ┌──────────────────▼──────────────────┐
+         │  📦 graph-dp-cdk                    │
+         │  CDK 基础设施 + 模块化 ETL 管道      │
+         │  → 构建 Neptune 知识图谱             │
+         └────┬─────────────────────┬──────────┘
+              │ 图谱查询            │ 告警触发
+              │                     │
+   ┌──────────▼──────────┐  ┌──────▼───────────────────┐
+   │  🔍 graph-rca-engine │  │  💥 graph-driven-chaos   │
+   │  多层 RCA 分析        │  │  （本仓库）              │
+   │  + Layer2 探针        │  │  AI 驱动的混沌工程平台   │
+   │  + Graph RAG 报告     │  │  (Chaos Mesh + AWS FIS)  │
+   └──────────┬──────────┘  └──────┬───────────────────┘
+              │  写入事件记录       │  验证 RCA 准确性
+              └────────────────────┘
+                      闭环
+```
+
+| 项目 | 仓库 | 定位 |
+|------|------|------|
+| **graph-dp-cdk** | [`RadiumGu/graph-dependency-managerment`](https://github.com/RadiumGu/graph-dependency-managerment) | 基础设施层 — CDK 栈、Neptune ETL 管道、DeepFlow + AWS 拓扑采集 |
+| **graph-rca-engine** | [`RadiumGu/graph-rca-engine`](https://github.com/RadiumGu/graph-rca-engine) | AIOps 根因分析引擎 — 多层根因分析、插件化 AWS 探针、Bedrock Graph RAG 报告 |
+| **graph-driven-chaos** | [`RadiumGu/graph-driven-chaos`](https://github.com/RadiumGu/graph-driven-chaos) | AI 驱动的混沌工程 — 假设生成、5 阶段实验引擎、闭环学习 |
+
+**数据流：** `graph-dp-cdk` ETL 填充 Neptune → CloudWatch 告警触发 `graph-rca-engine` → `graph-driven-chaos` 注入故障验证 RCA 准确性 → 结果回写 Neptune。
+
+---
+
 ## 架构概览
 
 ```
